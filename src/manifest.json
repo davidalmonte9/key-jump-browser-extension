@@ -1,5 +1,5 @@
 {
-  "manifest_version": 2,
+  "manifest_version": 3,
   "name": "Key Jump keyboard navigation",
   "description": "Hit-a-Hint style keyboard navigation. No mouse needed to click on links and stuff.",
   "version": "5.4.0",
@@ -13,10 +13,10 @@
   "permissions": ["storage"],
   "options_ui": {
     "page": "options.html",
-    "chrome_style": true
+    "open_in_tab": false
   },
   "background": {
-    "scripts": ["background.js"]
+    "service_worker": "background.js"
   },
   "content_scripts": [
     {
