@@ -3,21 +3,23 @@
   "parser": "babel-eslint",
   "parserOptions": {
     "sourceType": "module",
-    "ecmaVersion": 2019
+    "ecmaVersion": 2021
   },
   "env": {
-    "node": true
+    "node": true,
+    "es2021": true
   },
   "overrides": [
     {
-      "files": ["src/**/*"],
+      "files": ["src/**/*", "test/**/*"],
       "env": {
         "node": false,
         "browser": true,
         "webextensions": true
       },
       "globals": {
-        "chrome": "readonly"
+        "chrome": "readonly",
+        "structuredClone": "readonly"
       }
     }
   ]

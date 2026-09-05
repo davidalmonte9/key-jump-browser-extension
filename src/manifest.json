@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
-  "name": "Key Jump keyboard navigation",
-  "description": "Hit-a-Hint style keyboard navigation. No mouse needed to click on links and stuff.",
-  "version": "5.4.0",
-  "author": "Kenneth Sundqvist <kenneth@kesu.se>",
-  "homepage_url": "https://github.com/KennethSundqvist/key-jump-browser-extension",
+  "name": "Key Jump Plus",
+  "description": "Keyboard navigation with hints for links, buttons and fields. No mouse needed. Based on Key Jump by Kenneth Sundqvist.",
+  "version": "5.5.0",
+  "author": "David Almonte",
+  "homepage_url": "https://github.com/davidalmonte9/key-jump-browser-extension",
   "icons": {
     "16": "icon16.png",
     "48": "icon48.png",
@@ -16,20 +16,24 @@
     "open_in_tab": false
   },
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "scripts": ["background.js"]
   },
   "content_scripts": [
     {
-      "matches": ["*://*/*", "ftp://*/*"],
+      "matches": ["*://*/*"],
       "all_frames": false,
       "run_at": "document_start",
-      "js": ["bootstrap-state.js", "content.js"],
-      "css": ["content.css"]
+      "js": ["bootstrap-state.js", "content.js"]
     }
   ],
   "browser_specific_settings": {
     "gecko": {
-      "id": "keyjump@kesu.se"
+      "id": "keyjumpplus@davidalmonte.dev",
+      "strict_min_version": "142.0",
+      "data_collection_permissions": {
+        "required": ["none"]
+      }
     }
   }
 }

@@ -1,8 +1,8 @@
 {
-  "name": "key-jump-browser-extension",
+  "name": "key-jump-plus",
   "version": "5.4.0",
-  "description": "Easier keyboard navigation. No mouse needed to click on links and stuff.",
-  "author": "Kenneth Sundqvist <kenneth@kesu.se> (kesu.se)",
+  "description": "Key Jump Plus: keyboard navigation with hints. No mouse needed.",
+  "author": "David Almonte",
   "license": "MIT",
   "private": true,
   "scripts": {
@@ -18,6 +18,9 @@
     "eslint": "7.26.0",
     "eslint-config-prettier": "8.3.0",
     "prettier": "2.3.0",
-    "web-ext": "6.1.0"
-  }
+    "web-ext": "10.6.0"
+  },
+  "contributors": [
+    "Kenneth Sundqvist <kenneth@kesu.se> (kesu.se)"
+  ]
 }

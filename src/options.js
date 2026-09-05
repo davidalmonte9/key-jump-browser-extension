@@ -21,17 +21,26 @@ function setup() {
   const ignoreWhileInputFocusedCheckbox = document.getElementById(
     'ignoreWhileInputFocused',
   )
+  const resetOptionsButton = document.getElementById('resetOptions')
+  const hintLabelsRadios = document.querySelectorAll('input[name=hintLabels]')
 
-  activationShortcutInput.placeholder = getShortcutText(
-    state.options.activationShortcut,
-  )
-  newTabActivationShortcutInput.placeholder = getShortcutText(
-    state.options.newTabActivationShortcut,
-  )
-  autoTriggerCheckbox.checked = state.options.autoTrigger
-  activateNewTabCheckbox.checked = state.options.activateNewTab
-  ignoreWhileInputFocusedCheckbox.checked =
-    state.options.ignoreWhileInputFocused
+  function render() {
+    activationShortcutInput.placeholder = getShortcutText(
+      state.options.activationShortcut,
+    )
+    newTabActivationShortcutInput.placeholder = getShortcutText(
+      state.options.newTabActivationShortcut,
+    )
+    autoTriggerCheckbox.checked = state.options.autoTrigger
+    activateNewTabCheckbox.checked = state.options.activateNewTab
+    ignoreWhileInputFocusedCheckbox.checked =
+      state.options.ignoreWhileInputFocused
+    for (const radio of hintLabelsRadios) {
+      radio.checked = radio.value === state.options.hintLabels
+    }
+  }
+
+  render()
 
   bindShortcutInput('activationShortcut', activationShortcutInput)
   bindShortcutInput('newTabActivationShortcut', newTabActivationShortcutInput)
@@ -41,12 +50,31 @@ function setup() {
     'change',
     setIgnoreWhileInputFocused,
   )
+  for (const radio of hintLabelsRadios) {
+    radio.addEventListener('change', (event) => {
+      if (event.target.checked) {
+        saveOptions({hintLabels: event.target.value})
+      }
+    })
+  }
+  resetOptionsButton.addEventListener('click', () => {
+    const defaults = structuredClone(window.__KEYJUMP__.defaultOptions)
+    Object.assign(state.options, defaults)
+    saveOptions(defaults)
+    render()
+  })
 }
 
 function bindShortcutInput(optionsKey, inputElement) {
   inputElement.addEventListener('keydown', function setShortcut(event) {
     // Ignore Tab for accessibility reasons.
     if (event.key === 'Tab') {
+      return
+    }
+
+    // Wait for the actual key, not just a modifier being pressed.
+    if (['Control', 'Alt', 'Shift', 'Meta'].includes(event.key)) {
+      event.preventDefault()
       return
     }
 

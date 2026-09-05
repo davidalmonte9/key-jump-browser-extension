@@ -17,7 +17,9 @@ const state = {
   query: '',
   matchingHint: null,
   delayedCleanupCallback: null,
-  removeRefreshHintsEventListeners: null,
+  stopRefreshingHints: null,
+  refreshHintsRAF: null,
+  refreshHintsTimeout: null,
   renderCache: null,
 }
 
@@ -31,7 +33,110 @@ const classNames = Object.freeze({
   active: 'KEYJUMP_active',
   filtered: 'KEYJUMP_filtered',
   match: 'KEYJUMP_match',
+  typed: 'KEYJUMP_typed',
 })
+
+// The hints are rendered inside a closed shadow root so the page's CSS can't
+// affect them and our CSS can't affect the page.
+const hintStyles = `
+  :host {
+    all: initial !important;
+    position: fixed !important;
+    top: 0 !important;
+    left: 0 !important;
+    width: 0 !important;
+    height: 0 !important;
+    overflow: visible !important;
+    z-index: 2147483647 !important;
+    pointer-events: none !important;
+  }
+
+  .${classNames.container} {
+    transition: opacity 0.2s;
+    position: absolute;
+    top: 0;
+    left: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .${classNames.active} {
+    opacity: 1;
+  }
+
+  .${classNames.hint} {
+    transition: opacity 0.15s;
+    position: absolute;
+    box-sizing: border-box;
+    padding: 2px 5px;
+    color: #1c1c1c;
+    background: linear-gradient(#fff3a3, #ffe14d);
+    border: 1px solid rgba(90, 70, 0, 0.55);
+    border-radius: 4px;
+    box-shadow:
+      inset 0 1px 0 rgba(255, 255, 255, 0.6),
+      0 1px 3px rgba(0, 0, 0, 0.4);
+    font: 600 12px/14px system-ui, -apple-system, 'Segoe UI', Helvetica,
+      Arial, sans-serif;
+    font-variant-numeric: tabular-nums;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .${classNames.typed} {
+    color: #c2410c;
+  }
+
+  .${classNames.filtered} .${classNames.hint} {
+    opacity: 0;
+  }
+
+  .${classNames.filtered} .${classNames.match} {
+    opacity: 1;
+  }
+`
+
+const hintTargetSelector = [
+  // Don't search for 'a' to avoid finding elements used only for fragment
+  // links (jump to a point in a page) which sometimes mess up the hint
+  // numbering or it looks like they can be clicked when they can't.
+  'a[href]',
+  'area[href]',
+  'input:not([disabled]):not([type=hidden])',
+  'textarea:not([disabled])',
+  'select:not([disabled])',
+  'button:not([disabled])',
+  'summary',
+  '[contenteditable]:not([contenteditable=false]):not([disabled])',
+  // Elements that are made interactive with JavaScript.
+  '[onclick]',
+  '[tabindex]:not([tabindex^="-"])',
+  // ARIA roles for interactive widgets that are usually built from plain
+  // elements like div and span.
+  '[role=button]',
+  '[role=link]',
+  '[role=checkbox]',
+  '[role=radio]',
+  '[role=switch]',
+  '[role=tab]',
+  '[role=option]',
+  '[role=menuitem]',
+  '[role=menuitemcheckbox]',
+  '[role=menuitemradio]',
+  '[role=treeitem]',
+  '[role=combobox]',
+  '[role=textbox]',
+  '[role=searchbox]',
+  '[role=slider]',
+  // AngularJS 1 click binding.
+  '[ng-click]:not([disabled])',
+  // GWT Anchor widget class
+  // http://www.gwtproject.org/javadoc/latest/com/google/gwt/user/client/ui/Anchor.html
+  '.gwt-Anchor',
+]
+  .map((selector) => `${selector}:not([aria-disabled=true])`)
+  .join(',')
 
 function setup() {
   // We want to handle the events as soon as possible so listen for them
@@ -46,21 +151,35 @@ function setup() {
 }
 
 function keyboardEventCallback(event) {
+  if (event.repeat) {
+    return
+  }
+
+  // Events from inside a shadow root are retargeted to the shadow host by the
+  // time they reach `window`, so use the composed path to find the element
+  // that actually has focus.
+  const targetEl = event.composedPath()[0] || event.target
+
   if (
-    !event.repeat &&
-    !(
-      state.options.ignoreWhileInputFocused && canElementBeTypedIn(event.target)
-    )
+    state.options.ignoreWhileInputFocused &&
+    !state.active &&
+    canElementBeTypedIn(targetEl)
   ) {
-    if (event.type === 'keydown') {
-      handleKeydown(event)
-    } else if (event.type === 'keyup') {
-      handleKeyup(event)
-    }
+    return
+  }
+
+  if (event.type === 'keydown') {
+    handleKeydown(event)
+  } else if (event.type === 'keyup') {
+    handleKeyup(event)
   }
 }
 
 function canElementBeTypedIn(el) {
+  if (!el || !el.tagName) {
+    return false
+  }
+
   // Unknown input types are treated as text inputs so it's easier to test
   // for the types that we know can't be typed in.
   const typesYouCantTypeIn = [
@@ -105,10 +224,18 @@ function handleKeydown(event) {
   } else if (state.active && !eventHasModifierKey(event)) {
     if (event.key === 'Escape') {
       handleEscapeKey(event)
+    } else if (event.key === 'Backspace') {
+      handleBackspaceKey(event)
     } else {
-      const allowedQueryCharacters = '1234567890'
+      const allowedQueryCharacters =
+        state.options.hintLabels === 'letters'
+          ? letterHintAlphabet
+          : '1234567890'
 
-      if (allowedQueryCharacters.includes(event.key)) {
+      if (
+        event.key.length === 1 &&
+        allowedQueryCharacters.includes(event.key.toLowerCase())
+      ) {
         handleQueryKey(event)
       }
     }
@@ -173,63 +300,69 @@ function handleEscapeKey(event) {
   stopKeyboardEvent(event)
 
   if (state.query) {
-    state.query = ''
-    state.matchingHint = null
-    clearFilterFromHints()
+    setQuery('')
   } else {
     deactivateHintMode()
   }
 }
 
-function handleQueryKey(event) {
-  // Don't allow leading 0 in query.
-  if (state.query === '' && event.key === '0') {
+function handleBackspaceKey(event) {
+  if (!state.query) {
     return
   }
 
   stopKeyboardEvent(event)
+  setQuery(state.query.slice(0, -1))
+}
 
-  const newQuery = state.query + event.key
-  const newQueryAsInt = parseInt(newQuery)
-  const newMatch = state.hints[newQueryAsInt - 1]
+function handleQueryKey(event) {
+  const newQuery = state.query + event.key.toLowerCase()
+  const candidates = state.hints.filter((hint) => hint.id.startsWith(newQuery))
 
-  if (newMatch) {
-    state.query = newQuery
-    state.matchingHint = newMatch
-
-    filterHints()
-
-    if (
-      state.options.autoTrigger &&
-      // Now we check if it's possible to match another hint by appending
-      // another digit to the query. For example if the query is 1 and there are
-      // 15 hints then you could match hints 10-15 by appending 0-5 to the
-      // query.
-      //
-      // To do the check we first multiply the query with 10 because that will
-      // append a 0 to the end of the query, the lowest number that can be
-      // appended. Then we check if there are fewer hints than the new query, in
-      // which case no more matches can be made and we can autotrigger the
-      // current match.
-      //
-      // Assume that there are 15 hints, then:
-      // * Query = 1, Query * 10 = 10, and since 10 is less than 15 we know that
-      //   you could match hints 10-15 by appending 0-5 to the query.
-      // * Query = 2, Query * 10 = 20, and since 20 is more than 15 we know that
-      //   you can't match any other hints by appending another digit to the
-      //   query.
-      state.hints.length < newQueryAsInt * 10
-    ) {
-      triggerMatchingHint()
-    }
+  if (!candidates.length) {
+    return
   }
+
+  stopKeyboardEvent(event)
+  setQuery(newQuery)
+
+  // When only one hint can still be matched there is no point in waiting for
+  // more input. With numbers, if the query is 2 and there are 15 hints then
+  // no more hints can be matched by appending another digit (20+), but if
+  // the query is 1 then hints 10-15 can still be matched.
+  if (
+    state.options.autoTrigger &&
+    state.matchingHint &&
+    candidates.length === 1
+  ) {
+    triggerMatchingHint()
+  }
+}
+
+// Sets the query and updates the matching hint and the filtering of the
+// rendered hints to match.
+function setQuery(query) {
+  const candidates = state.hints.filter((hint) => hint.id.startsWith(query))
+
+  if (!query || !candidates.length) {
+    state.query = ''
+    state.matchingHint = null
+    clearFilterFromHints()
+    return
+  }
+
+  state.query = query
+  state.matchingHint = candidates.find((hint) => hint.id === query) || null
+  filterHints()
 }
 
 function triggerMatchingHint() {
   // Stop refreshing before triggering because the triggering could cause a
   // refresh, for example when triggering a fragment link and the page scrolls,
   // and that breaks the clean-up when deactivating.
-  state.removeRefreshHintsEventListeners()
+  if (state.stopRefreshingHints) {
+    state.stopRefreshingHints()
+  }
 
   const {
     matchingHint: {targetEl},
@@ -238,30 +371,49 @@ function triggerMatchingHint() {
 
   if (shouldElementBeFocused(targetEl)) {
     targetEl.focus()
+  } else if (openInNewTab && findLinkToOpenInNewTab(targetEl)) {
+    _browser.runtime.sendMessage({
+      openUrlInNewTab: findLinkToOpenInNewTab(targetEl).href,
+    })
   } else {
-    if (
-      openInNewTab &&
-      // Is a link.
-      targetEl.tagName.toLowerCase() === 'a' &&
-      // Has a href value.
-      targetEl.getAttribute('href')
-    ) {
-      console.log(`@@@ send message`)
-      _browser.runtime.sendMessage({openUrlInNewTab: targetEl.href})
-    } else {
-      const mouseEvent = new MouseEvent('click', {
-        view: window,
-        bubbles: true,
-        cancelable: true,
-      })
+    const mouseEvent = new MouseEvent('click', {
+      view: window,
+      bubbles: true,
+      cancelable: true,
+      composed: true,
+    })
 
-      targetEl.dispatchEvent(mouseEvent)
-    }
+    targetEl.dispatchEvent(mouseEvent)
   }
 
   // Deactivation is done after the triggering is complete since it resets the
   // hints stuff in the state, which we need when triggering.
   deactivateHintMode()
+}
+
+// Finds the link to open in a new tab for a hint target, which is either the
+// target itself or the closest link wrapped around it, for example when a
+// button inside a link was hinted.
+function findLinkToOpenInNewTab(targetEl) {
+  for (let el = targetEl; el; el = getParentElement(el)) {
+    if (canLinkBeOpenedInNewTab(el)) {
+      return el
+    }
+  }
+
+  return null
+}
+
+function canLinkBeOpenedInNewTab(el) {
+  const tagName = el.tagName.toLowerCase()
+
+  if ((tagName !== 'a' && tagName !== 'area') || !el.getAttribute('href')) {
+    return false
+  }
+
+  // Things like `javascript:` links can't be opened in a new tab, they have to
+  // be clicked so the page's JavaScript can handle them.
+  return ['http:', 'https:', 'file:', 'ftp:'].includes(el.protocol)
 }
 
 function activateHintMode() {
@@ -282,27 +434,12 @@ function activateHintMode() {
     state.delayedCleanupCallback()
   }
 
-  const refreshHintsHandler = refreshHintsFactory()
-
-  document.addEventListener('scroll', refreshHintsHandler)
-  window.addEventListener('resize', refreshHintsHandler)
-  window.addEventListener('popstate', refreshHintsHandler)
-
-  state.removeRefreshHintsEventListeners =
-    function removeRefreshHintsEventListeners() {
-      document.removeEventListener('scroll', refreshHintsHandler)
-      window.removeEventListener('resize', refreshHintsHandler)
-      window.removeEventListener('popstate', refreshHintsHandler)
-
-      // Removes itself so it can't be called multiple times, and to clean up
-      // memory usage.
-      state.removeRefreshHintsEventListeners = null
-    }
+  startRefreshingHints()
 }
 
 function deactivateHintMode() {
-  if (state.removeRefreshHintsEventListeners) {
-    state.removeRefreshHintsEventListeners()
+  if (state.stopRefreshingHints) {
+    state.stopRefreshingHints()
   }
 
   // We have to wait for the opacity transition to end before we can
@@ -325,9 +462,36 @@ function filterHints() {
   state.renderCache.containerEl.classList.add(classNames.filtered)
 
   for (const hint of state.hints) {
-    const method = hint.id.startsWith(state.query) ? 'add' : 'remove'
-    hint.hintEl.classList[method](classNames.match)
+    const isMatch = hint.id.startsWith(state.query)
+
+    hint.hintEl.classList.toggle(classNames.match, isMatch)
+    setHintText(hint, isMatch ? state.query : '')
   }
+}
+
+function clearFilterFromHints() {
+  state.renderCache.containerEl.classList.remove(classNames.filtered)
+
+  for (const hint of state.hints) {
+    hint.hintEl.classList.remove(classNames.match)
+    setHintText(hint, '')
+  }
+}
+
+// Renders the label with the part that has been typed highlighted.
+function setHintText(hint, typed) {
+  const {hintEl, id} = hint
+
+  hintEl.replaceChildren()
+
+  if (typed) {
+    const typedEl = document.createElement('span')
+    typedEl.className = classNames.typed
+    typedEl.textContent = id.slice(0, typed.length)
+    hintEl.appendChild(typedEl)
+  }
+
+  hintEl.appendChild(document.createTextNode(id.slice(typed.length)))
 }
 
 function shouldElementBeFocused(el) {
@@ -348,138 +512,136 @@ function shouldElementBeFocused(el) {
   )
 }
 
-function clearFilterFromHints() {
-  state.renderCache.containerEl.classList.remove(classNames.filtered)
-
-  for (const {hintEl} of state.hints) {
-    hintEl.classList.remove(classNames.match)
-  }
-}
+// Finding hints
 
 function findHints() {
-  const targetEls = state.rootEl.querySelectorAll(
-    [
-      // Don't search for 'a' to avoid finding elements used only for fragment
-      // links (jump to a point in a page) which sometimes mess up the hint
-      // numbering or it looks like they can be clicked when they can't.
-      'a[href]',
-      'input:not([disabled]):not([type=hidden])',
-      'textarea:not([disabled])',
-      'select:not([disabled])',
-      'button:not([disabled])',
-      '[contenteditable]:not([contenteditable=false]):not([disabled])',
-      '[ng-click]:not([disabled])',
-      // GWT Anchor widget class
-      // http://www.gwtproject.org/javadoc/latest/com/google/gwt/user/client/ui/Anchor.html
-      '.gwt-Anchor',
-    ].join(','),
+  const targetEls = []
+
+  collectHintTargets(state.rootEl, targetEls)
+
+  const visibleTargetEls = targetEls.filter(isElementVisible)
+  const redundantTargetEls = findRedundantTargets(visibleTargetEls)
+
+  const hintTargetEls = visibleTargetEls.filter(
+    (el) => !redundantTargetEls.has(el),
   )
+  const ids = createHintIds(hintTargetEls.length)
 
-  let hintId = 1
+  state.hints = hintTargetEls.map((targetEl, index) => ({
+    id: ids[index],
+    targetEl,
+  }))
+}
 
-  state.hints = []
+// Home row first, then the letters that are easiest to reach from it.
+const letterHintAlphabet = 'sadfjklewcmpgh'
+
+function createHintIds(count) {
+  if (state.options.hintLabels !== 'letters') {
+    return Array.from({length: count}, (_, index) => String(index + 1))
+  }
+
+  // Use the same length for all labels so no label is a prefix of another,
+  // which means a label is triggered as soon as it has been typed in full.
+  const base = letterHintAlphabet.length
+  let length = 1
+
+  while (base ** length < count) {
+    length++
+  }
+
+  return Array.from({length: count}, (_, index) => {
+    let id = ''
+
+    for (let position = 0, rest = index; position < length; position++) {
+      id = letterHintAlphabet[rest % base] + id
+      rest = Math.floor(rest / base)
+    }
+
+    return id
+  })
+}
+
+// Collects the hint target elements in document order, including the ones
+// inside open shadow roots.
+function collectHintTargets(root, targetEls) {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT)
+
+  for (let el = walker.currentNode; el; el = walker.nextNode()) {
+    // The first node is the root itself, which is a document fragment when
+    // walking a shadow root.
+    if (
+      el.nodeType !== Node.ELEMENT_NODE ||
+      (state.renderCache && el === state.renderCache.hostEl)
+    ) {
+      continue
+    }
+
+    if (el.matches(hintTargetSelector)) {
+      targetEls.push(el)
+    }
+
+    if (el.shadowRoot) {
+      collectHintTargets(el.shadowRoot, targetEls)
+    }
+  }
+}
+
+// A target that wraps exactly one other target, like a link around a single
+// button or a focusable card with a single link in it, would get two hints
+// that do the same thing. Only the inner target is kept since clicking it
+// also bubbles up to the outer one.
+function findRedundantTargets(targetEls) {
+  const targetSet = new Set(targetEls)
+  const nestedTargetCounts = new Map()
 
   for (const el of targetEls) {
-    if (isElementVisible(el)) {
-      state.hints.push({
-        id: String(hintId),
-        targetEl: el,
-      })
+    const parentTargetEl = findParentTarget(el, targetSet)
 
-      hintId++
+    if (parentTargetEl) {
+      nestedTargetCounts.set(
+        parentTargetEl,
+        (nestedTargetCounts.get(parentTargetEl) || 0) + 1,
+      )
     }
   }
+
+  const redundantTargetEls = new Set()
+
+  for (const [el, count] of nestedTargetCounts) {
+    if (count === 1) {
+      redundantTargetEls.add(el)
+    }
+  }
+
+  return redundantTargetEls
 }
 
-function renderHints() {
-  if (!state.hints.length) {
-    return
+function findParentTarget(el, targetSet) {
+  for (let parent = getParentElement(el); parent; ) {
+    if (targetSet.has(parent)) {
+      return parent
+    }
+
+    parent = getParentElement(parent)
   }
 
-  if (!state.renderCache) {
-    setupRendering()
-  }
-
-  const {renderCache: cache} = state
-
-  const fragment = document.createDocumentFragment()
-  const winHeight = document.documentElement.clientHeight
-
-  for (const hint of state.hints) {
-    hint.hintEl = cache.hintSourceEl.cloneNode(true)
-    hint.hintEl.textContent = hint.id
-
-    fragment.appendChild(hint.hintEl)
-
-    // TODO: Refactor to find the first visible child element instead of rect.
-    // We must check both the element rect and styles to see if it is visible.
-    const rects = hint.targetEl.getClientRects()
-    // If none of the rects are visible use the first rect as a workaround...
-    const targetPos = Array.from(rects).find(isRectVisible) || rects[0]
-    const hintCharWidth = cache.hintCharWidth * hint.id.length
-
-    const top = Math.max(
-      0,
-      Math.min(Math.round(targetPos.top), winHeight - cache.hintHeight),
-    )
-    const left = Math.max(
-      0,
-      Math.round(targetPos.left - cache.hintWidth - hintCharWidth - 2),
-    )
-
-    hint.hintEl.style.top = top + 'px'
-    hint.hintEl.style.left = left + 'px'
-  }
-
-  cache.containerEl.appendChild(fragment)
+  return null
 }
 
-function refreshHintsFactory() {
-  function refreshHints() {
-    if (state.hints.length) {
-      removeHints(state.hints)
-    }
-
-    findHints()
-
-    if (!state.hints.length) {
-      return
-    }
-
-    renderHints()
-
-    if (state.query) {
-      filterHints()
-    }
+// Like `parentElement` but also steps out of shadow roots to the host element.
+function getParentElement(el) {
+  if (el.parentElement) {
+    return el.parentElement
   }
 
-  return function debouncedRefreshHints(event) {
-    cancelAnimationFrame(state.refreshHintsRAF)
-    state.refreshHintsRAF = requestAnimationFrame(refreshHints)
+  const parentNode = el.parentNode
 
-    // Sometimes the page change is a bit slow and the refresh has happened
-    // before the page changes, so refresh again after a timeout to hopefully
-    // catch those cases.
-    if (event.type === 'popstate') {
-      clearTimeout(state.refreshHintsTimeout)
-      state.refreshHintsTimeout = setTimeout(refreshHints, 350)
-    }
+  if (parentNode && parentNode.nodeType === Node.DOCUMENT_FRAGMENT_NODE) {
+    return parentNode.host || null
   }
-}
 
-function delayedCleanupFactory() {
-  const {hints} = state
-
-  return function delayedCleanup() {
-    state.renderCache.containerEl.removeEventListener(
-      'transitionend',
-      state.delayedCleanupCallback,
-    )
-    state.delayedCleanupCallback = null
-
-    removeHints(hints)
-    state.renderCache.containerEl.classList.remove(classNames.filtered)
-  }
+  return null
 }
 
 function isElementVisible(el) {
@@ -493,7 +655,7 @@ function isElementVisible(el) {
   }
 
   // These overflow values will hide the overflowing child elements.
-  const hidingOverflows = ['hidden', 'auto', 'scroll']
+  const hidingOverflows = ['hidden', 'clip', 'auto', 'scroll']
   const allowedCollapsedTags = ['html', 'body']
 
   while (el) {
@@ -506,8 +668,8 @@ function isElementVisible(el) {
       styles.opacity === '0' ||
       (
         (
-          (rect.width <= 0 && hidingOverflows.includes(styles['overflow-x'])) ||
-          (rect.height <= 0 && hidingOverflows.includes(styles['overflow-y']))
+          (rect.width <= 0 && hidingOverflows.includes(styles.overflowX)) ||
+          (rect.height <= 0 && hidingOverflows.includes(styles.overflowY))
         ) &&
         !allowedCollapsedTags.includes(el.tagName.toLowerCase())
       )
@@ -515,7 +677,7 @@ function isElementVisible(el) {
       return false
     }
 
-    el = el.parentElement
+    el = getParentElement(el)
 
     if (el) {
       rect = el.getBoundingClientRect()
@@ -547,12 +709,72 @@ function isRectInViewport(rect) {
   return true
 }
 
+// Rendering
+
+function renderHints() {
+  if (!state.hints.length) {
+    return
+  }
+
+  if (!state.renderCache) {
+    setupRendering()
+  }
+
+  const {renderCache: cache} = state
+
+  const fragment = document.createDocumentFragment()
+  const winHeight = document.documentElement.clientHeight
+
+  for (const hint of state.hints) {
+    hint.hintEl = cache.hintSourceEl.cloneNode(true)
+    setHintText(hint, '')
+
+    fragment.appendChild(hint.hintEl)
+
+    // TODO: Refactor to find the first visible child element instead of rect.
+    // We must check both the element rect and styles to see if it is visible.
+    const rects = hint.targetEl.getClientRects()
+    // If none of the rects are visible use the first rect as a workaround...
+    const targetPos =
+      Array.from(rects).find(isRectVisible) ||
+      rects[0] ||
+      hint.targetEl.getBoundingClientRect()
+    const hintCharWidth = cache.hintCharWidth * hint.id.length
+
+    const top = Math.max(
+      0,
+      Math.min(Math.round(targetPos.top), winHeight - cache.hintHeight),
+    )
+    const left = Math.max(
+      0,
+      Math.round(targetPos.left - cache.hintWidth - hintCharWidth - 2),
+    )
+
+    hint.hintEl.style.top = top + 'px'
+    hint.hintEl.style.left = left + 'px'
+  }
+
+  cache.containerEl.appendChild(fragment)
+}
+
 function setupRendering() {
   const cache = (state.renderCache = {})
 
+  // Use a custom element name so generic page styles for elements like `div`
+  // can't target the host, and render the hints in a closed shadow root so
+  // page styles can't reach them at all.
+  cache.hostEl = document.createElement('keyjump-hints')
+  cache.shadowRoot = cache.hostEl.attachShadow({mode: 'closed'})
+
+  const styleEl = document.createElement('style')
+  styleEl.textContent = hintStyles
+  cache.shadowRoot.appendChild(styleEl)
+
   cache.containerEl = document.createElement('div')
   cache.containerEl.classList.add(classNames.container)
-  state.rootEl.appendChild(cache.containerEl)
+  cache.shadowRoot.appendChild(cache.containerEl)
+
+  state.rootEl.appendChild(cache.hostEl)
 
   cache.hintSourceEl = document.createElement('div')
   cache.hintSourceEl.classList.add(classNames.hint)
@@ -561,7 +783,7 @@ function setupRendering() {
   cache.containerEl.appendChild(hintDimensionsEl)
 
   cache.hintWidth = hintDimensionsEl.offsetWidth
-  hintDimensionsEl.innerHTML = '0'
+  hintDimensionsEl.textContent = '0'
   cache.hintHeight = hintDimensionsEl.offsetHeight
   cache.hintCharWidth = hintDimensionsEl.offsetWidth - cache.hintWidth
 
@@ -570,6 +792,120 @@ function setupRendering() {
 
 function removeHints(hints) {
   for (const {hintEl} of hints) {
-    hintEl.parentNode.removeChild(hintEl)
+    if (hintEl && hintEl.parentNode) {
+      hintEl.parentNode.removeChild(hintEl)
+    }
+  }
+}
+
+function delayedCleanupFactory() {
+  const {hints} = state
+
+  return function delayedCleanup() {
+    state.renderCache.containerEl.removeEventListener(
+      'transitionend',
+      state.delayedCleanupCallback,
+    )
+    state.delayedCleanupCallback = null
+
+    removeHints(hints)
+    state.renderCache.containerEl.classList.remove(classNames.filtered)
+  }
+}
+
+// Refreshing
+
+// While the hints are shown the page can scroll, resize or change its content
+// (menus opening, infinite scrolling, single page app navigation), so watch
+// for those things and re-render the hints to match.
+function startRefreshingHints() {
+  const refreshHints = () => {
+    state.refreshHintsRAF = null
+
+    if (!state.active) {
+      return
+    }
+
+    removeHints(state.hints)
+    findHints()
+
+    if (!state.hints.length) {
+      deactivateHintMode()
+      return
+    }
+
+    renderHints()
+    setQuery(state.query)
+  }
+
+  const scheduleRefresh = () => {
+    if (state.refreshHintsRAF === null) {
+      state.refreshHintsRAF = requestAnimationFrame(refreshHints)
+    }
+  }
+
+  const eventHandler = (event) => {
+    scheduleRefresh()
+
+    // Sometimes the page change is a bit slow and the refresh has happened
+    // before the page changes, so refresh again after a timeout to hopefully
+    // catch those cases.
+    if (event.type === 'popstate' || event.type === 'hashchange') {
+      clearTimeout(state.refreshHintsTimeout)
+      state.refreshHintsTimeout = setTimeout(scheduleRefresh, 350)
+    }
+  }
+
+  // Throttle mutation triggered refreshes since some pages mutate the DOM
+  // constantly, for example when animating.
+  let lastMutationRefresh = 0
+  let mutationRefreshTimeout = null
+  const mutationRefreshInterval = 200
+
+  const mutationObserver = new MutationObserver(() => {
+    if (mutationRefreshTimeout !== null) {
+      return
+    }
+
+    const wait = Math.max(
+      0,
+      lastMutationRefresh + mutationRefreshInterval - Date.now(),
+    )
+
+    mutationRefreshTimeout = setTimeout(() => {
+      mutationRefreshTimeout = null
+      lastMutationRefresh = Date.now()
+      scheduleRefresh()
+    }, wait)
+  })
+
+  // Use the capturing phase for scroll since scroll events don't bubble and we
+  // want to know when any scrollable element on the page scrolls.
+  document.addEventListener('scroll', eventHandler, true)
+  window.addEventListener('resize', eventHandler)
+  window.addEventListener('popstate', eventHandler)
+  window.addEventListener('hashchange', eventHandler)
+  mutationObserver.observe(state.rootEl, {
+    childList: true,
+    subtree: true,
+    attributes: true,
+    attributeFilter: ['class', 'style', 'hidden', 'disabled', 'href', 'open'],
+  })
+
+  state.stopRefreshingHints = function stopRefreshingHints() {
+    document.removeEventListener('scroll', eventHandler, true)
+    window.removeEventListener('resize', eventHandler)
+    window.removeEventListener('popstate', eventHandler)
+    window.removeEventListener('hashchange', eventHandler)
+    mutationObserver.disconnect()
+
+    cancelAnimationFrame(state.refreshHintsRAF)
+    state.refreshHintsRAF = null
+    clearTimeout(state.refreshHintsTimeout)
+    clearTimeout(mutationRefreshTimeout)
+
+    // Removes itself so it can't be called multiple times, and to clean up
+    // memory usage.
+    state.stopRefreshingHints = null
   }
 }

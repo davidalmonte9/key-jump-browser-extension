@@ -89,6 +89,34 @@
           <!-- http://www.gwtproject.org/javadoc/latest/com/google/gwt/user/client/ui/Anchor.html -->
           <a class="gwt-Anchor">.gwt-Anchor</a>
         </p>
+        <p>
+          ARIA roles:
+          <span role="button">role=button</span>
+          <span role="link">role=link</span>
+          <span role="checkbox" aria-checked="false">role=checkbox</span>
+          <span role="tab">role=tab</span>
+          <span role="menuitem">role=menuitem</span>
+        </p>
+        <p>
+          Focusable with <code>tabindex="0"</code>:
+          <span tabindex="0">tabindex=0</span>
+        </p>
+        <p>
+          With <code>onclick</code> attribute:
+          <span onclick="void 0">onclick</span>
+        </p>
+        <details>
+          <summary>Details summary</summary>
+          Hidden details content.
+        </details>
+        <p id="shadow-host-container">
+          Inside an open shadow root:
+          <span id="shadow-host"></span>
+        </p>
+        <p>
+          Only one hint for a link that wraps a single button:
+          <a href="#"><button type="button">Nested button</button></a>
+        </p>
       </div>
 
       <div class="col">
@@ -151,6 +179,20 @@
           Inside parent with opacity 0:
           <span style="opacity: 0"><a href="#">Hello!</a></span>
         </p>
+        <p>
+          Not focusable with <code>tabindex="-1"</code>:
+          <span tabindex="-1">tabindex=-1</span>
+        </p>
+        <p>
+          With <code>aria-disabled="true"</code>:
+          <span role="button" aria-disabled="true">role=button</span>
+        </p>
+        <p>
+          Inside a parent with <code>overflow: clip</code> and width 0:
+          <span style="display: inline-block; width: 0; overflow: clip">
+            <a href="#">Hello!</a>
+          </span>
+        </p>
       </div>
     </div>
 
@@ -197,6 +239,10 @@
         <p>input type=time <input type="time" /></p>
         <p>input type=month <input type="month" /></p>
         <p>input type=week <input type="week" /></p>
+        <p id="shadow-input-container">
+          Input inside an open shadow root:
+          <span id="shadow-input-host"></span>
+        </p>
       </div>
     </div>
 
@@ -265,6 +311,18 @@
 
     <script>
       ;(function (d) {
+        // Shadow DOM test cases
+        ;(function () {
+          var host = d.getElementById('shadow-host')
+          var root = host.attachShadow({mode: 'open'})
+          root.innerHTML =
+            '<a href="#">Shadow link</a> <button type="button">Shadow button</button>'
+
+          var inputHost = d.getElementById('shadow-input-host')
+          var inputRoot = inputHost.attachShadow({mode: 'open'})
+          inputRoot.innerHTML = '<input placeholder="shadow input" />'
+        })()
+
         // Generate many links
         ;(function () {
           var numberOfLinks = 2000

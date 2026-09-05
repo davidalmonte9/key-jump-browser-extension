@@ -23,6 +23,24 @@
     </div>
 
     <div class="section">
+      <h2>Hint labels</h2>
+
+      <div class="option">
+        <label>
+          <input type="radio" name="hintLabels" value="numbers" />
+          Numbers (1, 2, 3 …)
+        </label>
+      </div>
+
+      <div class="option">
+        <label>
+          <input type="radio" name="hintLabels" value="letters" />
+          Letters (S, A, D, F …) – type the label, no Enter needed
+        </label>
+      </div>
+    </div>
+
+    <div class="section">
       <h2>Behaviour</h2>
 
       <div class="option">
@@ -45,6 +63,10 @@
           Ignore shortcuts while text fields are focused
         </label>
       </div>
+    </div>
+
+    <div class="section">
+      <button type="button" id="resetOptions">Reset to defaults</button>
     </div>
 
     <script src="bootstrap-state.js"></script>

@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Key Jump harness</title>
+    <script>
+      // Stubs the extension APIs so the real content script can run in a
+      // plain page, without the extension being installed. Loaded by the
+      // dev server at /harness.
+      const messages = (window.__KEYJUMP_TEST_MESSAGES__ = [])
+      window.chrome = {
+        storage: {
+          sync: {
+            get: () => Promise.resolve({}),
+            set: () => Promise.resolve(),
+          },
+          onChanged: {addListener() {}},
+        },
+        runtime: {
+          sendMessage: (message) => messages.push(message),
+        },
+      }
+    </script>
+    <script src="/src/bootstrap-state.js"></script>
+    <script src="/src/content.js"></script>
+  </head>
+  <body>
+    <script>
+      // Copy the test page's body into this document so the content script
+      // sees exactly the same markup as the real test page.
+      fetch('/')
+        .then((res) => res.text())
+        .then((html) => {
+          const doc = new DOMParser().parseFromString(html, 'text/html')
+          // Scripts parsed by DOMParser never run, so re-create them.
+          const scripts = Array.from(doc.querySelectorAll('script'), (el) => {
+            el.remove()
+            return el.textContent
+          })
+          for (const style of doc.querySelectorAll('style')) {
+            document.head.appendChild(style)
+          }
+          document.body.replaceChildren(...doc.body.childNodes)
+          for (const code of scripts) {
+            const el = document.createElement('script')
+            el.textContent = code
+            document.body.appendChild(el)
+          }
+          document.dispatchEvent(new Event('harness-ready'))
+        })
+    </script>
+  </body>
+</html>
